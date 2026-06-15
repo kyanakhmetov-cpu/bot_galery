@@ -10,6 +10,7 @@
 
 import os
 import sys
+import json
 import random
 import time
 
@@ -39,7 +40,14 @@ PREFERRED_CLASSIFICATIONS = {
 }
 
 # Добавлять ли в конце поста ссылку на страницу работы на сайте музея.
-ADD_SOURCE_LINK = True
+ADD_SOURCE_LINK = False
+
+# Переводить ли подписи на русский (через агрегатор Polza AI).
+TRANSLATE_TO_RUSSIAN = True
+# Адрес OpenAI-совместимого API агрегатора Polza AI.
+POLZA_BASE_URL = "https://api.polza.ai/api/v1"
+# Модель для перевода в формате «провайдер/модель». Полный список — на polza.ai.
+TRANSLATION_MODEL = "google/gemini-3.1-flash-lite"
 
 # Сколько случайных работ перебрать на каждое поисковое слово, прежде чем
 # перейти к следующему. Больше — надёжнее, но чуть медленнее.
@@ -142,6 +150,68 @@ def find_artwork(exclude_ids=None):
     return None
 
 
+def _extract_json(text):
+    """Достать JSON-объект из ответа модели (на случай ```json ... ``` или лишнего текста)."""
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError("в ответе модели нет JSON")
+    return json.loads(text[start:end + 1])
+
+
+def translate_artwork(art, api_key):
+    """Перевести поля работы на русский через Polza AI (OpenAI-совместимый API).
+
+    При любой ошибке возвращает исходные (английские) поля, чтобы пост всё равно вышел.
+    """
+    prompt = (
+        "Переведи данные о произведении искусства на русский язык для подписи в Telegram.\n"
+        "Правила:\n"
+        "- Имя художника дай в общепринятой русской транслитерации "
+        "(например, 'Claude Monet' -> 'Клод Моне').\n"
+        "- Название переведи естественно, по-русски.\n"
+        "- Технику переведи как принято в искусствоведении "
+        "(например, 'Oil on canvas' -> 'холст, масло').\n"
+        "- Дату передай по-русски (например, 'ca. 1830' -> 'ок. 1830').\n"
+        "Верни СТРОГО JSON без markdown и без пояснений, "
+        "с ключами artist, title, medium, date.\n\n"
+        f"artist: {art['artist']}\n"
+        f"title: {art['title']}\n"
+        f"medium: {art['medium']}\n"
+        f"date: {art['date']}\n"
+    )
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "model": TRANSLATION_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 500,
+        "temperature": 0.2,
+    }
+    try:
+        resp = requests.post(
+            f"{POLZA_BASE_URL}/chat/completions",
+            headers=headers,
+            json=body,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        text = resp.json()["choices"][0]["message"]["content"]
+        parsed = _extract_json(text)
+        return {
+            **art,
+            "artist": (parsed.get("artist") or art["artist"]).strip(),
+            "title": (parsed.get("title") or art["title"]).strip(),
+            "medium": (parsed.get("medium") or art["medium"]).strip(),
+            "date": (parsed.get("date") or art["date"]).strip(),
+        }
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ! перевод не удался, оставляю английский вариант ({exc})", file=sys.stderr)
+        return art
+
+
 def build_caption(art):
     """Собрать подпись: Художник — Название (техника, год)."""
     inside = ", ".join(part for part in (art["medium"], art["date"]) if part)
@@ -190,6 +260,13 @@ def main():
         )
         sys.exit(1)
 
+    polza_key = os.environ.get("POLZA_API_KEY")
+    if TRANSLATE_TO_RUSSIAN and not polza_key:
+        print(
+            "Внимание: POLZA_API_KEY не задан — посты выйдут на английском.",
+            file=sys.stderr,
+        )
+
     seen_ids = set()
     posted = 0
     for i in range(1, POSTS_PER_RUN + 1):
@@ -201,6 +278,10 @@ def main():
 
         if art.get("id") is not None:
             seen_ids.add(art["id"])
+
+        if TRANSLATE_TO_RUSSIAN and polza_key:
+            art = translate_artwork(art, polza_key)
+
         print(f"[{i}/{POSTS_PER_RUN}] Найдено: {art['artist']} — {art['title']} ({art['date']})")
 
         try:

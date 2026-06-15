@@ -45,6 +45,13 @@ ADD_SOURCE_LINK = True
 # перейти к следующему. Больше — надёжнее, но чуть медленнее.
 OBJECTS_PER_TERM = 25
 
+# Сколько постов публиковать за один запуск (т.е. за один день). Поставь 1 —
+# будет один пост в день, как раньше.
+POSTS_PER_RUN = 5
+
+# Пауза между постами, в секундах. 5 секунд — безопасно для Telegram.
+DELAY_BETWEEN_POSTS_SECONDS = 5
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Дальше менять обычно не нужно
 # ─────────────────────────────────────────────────────────────────────────────
@@ -99,6 +106,7 @@ def object_to_artwork(obj, require_preferred):
         if classification not in PREFERRED_CLASSIFICATIONS:
             return None
     return {
+        "id": obj.get("objectID"),
         "artist": (obj.get("artistDisplayName") or "").strip() or "Unknown artist",
         "title": title,
         "medium": (obj.get("medium") or "").strip(),
@@ -108,8 +116,13 @@ def object_to_artwork(obj, require_preferred):
     }
 
 
-def find_artwork():
-    """Найти подходящую работу. Сначала ищем «настенное» искусство, потом — любое."""
+def find_artwork(exclude_ids=None):
+    """Найти подходящую работу. Сначала ищем «настенное» искусство, потом — любое.
+
+    exclude_ids — множество ID, которые нужно пропустить, чтобы за один запуск
+    не опубликовать одну и ту же работу дважды.
+    """
+    exclude_ids = exclude_ids or set()
     passes = [True, False] if PREFER_WALL_ART else [False]
     for require_preferred in passes:
         terms = SEARCH_TERMS[:]
@@ -120,6 +133,8 @@ def find_artwork():
                 continue
             random.shuffle(ids)
             for object_id in ids[:OBJECTS_PER_TERM]:
+                if object_id in exclude_ids:
+                    continue
                 obj = _get_json(f"{MET_BASE}/objects/{object_id}")
                 art = object_to_artwork(obj, require_preferred)
                 if art:
@@ -175,16 +190,33 @@ def main():
         )
         sys.exit(1)
 
-    print("Ищу подходящую работу в коллекции музея…")
-    art = find_artwork()
-    if not art:
-        print("Не удалось найти подходящую работу. Попробуйте запустить ещё раз.", file=sys.stderr)
-        sys.exit(1)
+    seen_ids = set()
+    posted = 0
+    for i in range(1, POSTS_PER_RUN + 1):
+        print(f"[{i}/{POSTS_PER_RUN}] Ищу подходящую работу в коллекции музея…")
+        art = find_artwork(exclude_ids=seen_ids)
+        if not art:
+            print(f"[{i}/{POSTS_PER_RUN}] Не удалось найти работу, пропускаю.", file=sys.stderr)
+            continue
 
-    print(f"Найдено: {art['artist']} — {art['title']} ({art['date']})")
-    print("Публикую в Telegram…")
-    post_to_telegram(art, token, channel)
-    print("Готово ✅ Пост опубликован.")
+        if art.get("id") is not None:
+            seen_ids.add(art["id"])
+        print(f"[{i}/{POSTS_PER_RUN}] Найдено: {art['artist']} — {art['title']} ({art['date']})")
+
+        try:
+            post_to_telegram(art, token, channel)
+            posted += 1
+            print(f"[{i}/{POSTS_PER_RUN}] Опубликовано ✅")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[{i}/{POSTS_PER_RUN}] Ошибка публикации: {exc}", file=sys.stderr)
+
+        # Пауза перед следующим постом (после последнего ждать не нужно).
+        if i < POSTS_PER_RUN:
+            time.sleep(DELAY_BETWEEN_POSTS_SECONDS)
+
+    print(f"Итого опубликовано: {posted} из {POSTS_PER_RUN}.")
+    if posted == 0:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

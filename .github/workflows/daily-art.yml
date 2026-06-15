@@ -30,4 +30,5 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
+          POLZA_API_KEY: ${{ secrets.POLZA_API_KEY }}
         run: python post_artwork.py

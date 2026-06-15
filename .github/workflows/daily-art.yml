@@ -1,0 +1,33 @@
+name: Daily Art Post
+
+on:
+  schedule:
+    # Время указывается в UTC. По умолчанию 09:00 UTC.
+    # Франкфурт летом = UTC+2 → пост выйдет около 11:00 по местному времени.
+    # Поменять время: измените строку ниже. Формат: "минуты часы * * *".
+    #   "0 7 * * *"  → 07:00 UTC   (~09:00 во Франкфурте летом)
+    #   "30 17 * * *"→ 17:30 UTC   (~19:30 во Франкфурте летом)
+    - cron: "0 9 * * *"
+  # Кнопка ручного запуска во вкладке Actions (для проверки прямо сейчас).
+  workflow_dispatch:
+
+jobs:
+  post-artwork:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Post artwork to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
+        run: python post_artwork.py
